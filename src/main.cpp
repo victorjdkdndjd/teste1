@@ -28,10 +28,9 @@ constexpr std::size_t OFF_SELECTION_OVERLAY_MATERIAL = 0x1030;
 constexpr std::size_t OFF_SCREEN_CONTEXT_COLOR_HOLDER = 0x30;
 constexpr std::size_t OFF_SCREEN_CONTEXT_TESSELLATOR = 0xB8;
 
-constexpr std::string_view SIG_CLIENT_INSTANCE_UPDATE =
-    "? ? ? A9 ? ? ? A9 ? ? ? A9 ? ? ? A9 ? ? ? A9 ? ? ? A9 FD 03 00 91 ? ? ? D1 59 D0 3B D5 F3 03 00 AA F4 03 01 2A ? ? ? F9 ? ? ? F8 ? ? ? F9 ? ? ? F9";
-constexpr std::string_view SIG_GET_LOCAL_PLAYER =
-    "? ? ? D1 ? ? ? A9 ? ? ? F9 ? ? ? 91 53 D0 3B D5 E8 03 00 AA ? ? ? 91 ? ? ? F9 ? ? ? 91 ? ? ? F8 ? ? ? 95 ? ? ? 91 ? ? ? 95 ? ? ? 36 ? ? ? 91 ? ? ? 52 ? ? ? 94";
+// These signatures were checked against the current arm64 libminecraftpe.so.
+constexpr std::string_view SIG_NORMAL_TICK =
+    "? ? ? FC ? ? ? A9 ? ? ? A9 ? ? ? A9 ? ? ? A9 ? ? ? A9 ? ? ? A9 ? ? ? 91 ? ? ? D1 54 D0 3B D5 F3 03 00 AA ? ? ? F9 ? ? ? F8 ? ? ? 39";
 constexpr std::string_view SIG_RENDER_LEVEL =
     "? ? ? FC ? ? ? 6D ? ? ? 6D ? ? ? 6D ? ? ? A9 ? ? ? A9 ? ? ? A9 ? ? ? A9 ? ? ? A9 ? ? ? A9 ? ? ? 91 ? ? ? D1 57 D0 3B D5";
 constexpr std::string_view SIG_TESSELLATOR_BEGIN =
@@ -43,29 +42,39 @@ constexpr std::string_view SIG_TESSELLATOR_VERTEX =
 constexpr std::string_view SIG_RENDER_MESH =
     "? ? ? A9 ? ? ? F9 ? ? ? A9 ? ? ? A9 ? ? ? A9 FD 03 00 91 ? ? ? D1 58 D0 3B D5 F7 03 00 AA E0 03 01 AA ? ? ? F9 F4 03 04 AA";
 
-using ClientInstanceUpdate = void* (*)(void*, bool);
-using GetLocalPlayer = void* (*)(void*);
+using NormalTick = void (*)(void*);
 using RenderLevel = void (*)(void*, void*, void*);
 using TessellatorBegin = void (*)(void*, void*, int, int, int);
 using TessellatorColor = void (*)(void*, float, float, float, float);
 using TessellatorVertex = void (*)(void*, float, float, float);
 using RenderMeshImmediately = void (*)(void*, void*, void*, char*);
 
-std::atomic<void*> g_clientInstance{nullptr};
-ClientInstanceUpdate g_clientUpdateOriginal = nullptr;
-GetLocalPlayer g_getLocalPlayer = nullptr;
+NormalTick g_normalTickOriginal = nullptr;
 RenderLevel g_renderLevelOriginal = nullptr;
 TessellatorBegin g_tessBegin = nullptr;
 TessellatorColor g_tessColor = nullptr;
 TessellatorVertex g_tessVertex = nullptr;
 RenderMeshImmediately g_renderMesh = nullptr;
 
-void* g_clientUpdateTarget = nullptr;
+void* g_normalTickTarget = nullptr;
 void* g_renderLevelTarget = nullptr;
-bool g_clientHooked = false;
+bool g_tickHooked = false;
 bool g_renderHooked = false;
+
+std::atomic<float> g_playerX{0.0f};
+std::atomic<float> g_playerY{0.0f};
+std::atomic<float> g_playerZ{0.0f};
+std::atomic<std::uint64_t> g_lastPlayerTickMs{0};
+std::atomic<bool> g_playerPositionValid{false};
+
 bool g_petInitialized = false;
 Vec3 g_petPos{0.0f, 0.0f, 0.0f};
+
+std::uint64_t steadyMillis() {
+    return static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count());
+}
 
 float elapsedSeconds() {
     static const auto start = std::chrono::steady_clock::now();
@@ -96,22 +105,20 @@ std::uintptr_t resolve(std::string_view name, std::string_view signature) {
 }
 
 bool resolveMinecraftRuntime() {
-    const auto clientUpdate = resolve("ClientInstanceUpdate", SIG_CLIENT_INSTANCE_UPDATE);
-    const auto getLocalPlayer = resolve("ClientInstanceGetLocalPlayer", SIG_GET_LOCAL_PLAYER);
+    const auto normalTick = resolve("NormalTick", SIG_NORMAL_TICK);
     const auto renderLevel = resolve("RenderLevel", SIG_RENDER_LEVEL);
     const auto tessBegin = resolve("TessellatorBegin", SIG_TESSELLATOR_BEGIN);
     const auto tessColor = resolve("TessellatorColor", SIG_TESSELLATOR_COLOR);
     const auto tessVertex = resolve("TessellatorVertex", SIG_TESSELLATOR_VERTEX);
     const auto renderMesh = resolve("MeshHelpersRenderMeshImmediately", SIG_RENDER_MESH);
 
-    if (!clientUpdate || !getLocalPlayer || !renderLevel || !tessBegin || !tessColor || !tessVertex || !renderMesh) {
+    if (!normalTick || !renderLevel || !tessBegin || !tessColor || !tessVertex || !renderMesh) {
         FP_LOGE("Flying Pet cannot start: one or more Minecraft signatures are unavailable.");
         return false;
     }
 
-    g_clientUpdateTarget = reinterpret_cast<void*>(clientUpdate);
+    g_normalTickTarget = reinterpret_cast<void*>(normalTick);
     g_renderLevelTarget = reinterpret_cast<void*>(renderLevel);
-    g_getLocalPlayer = reinterpret_cast<GetLocalPlayer>(getLocalPlayer);
     g_tessBegin = reinterpret_cast<TessellatorBegin>(tessBegin);
     g_tessColor = reinterpret_cast<TessellatorColor>(tessColor);
     g_tessVertex = reinterpret_cast<TessellatorVertex>(tessVertex);
@@ -119,18 +126,42 @@ bool resolveMinecraftRuntime() {
     return true;
 }
 
-void* getLocalPlayer() {
-    void* client = g_clientInstance.load(std::memory_order_acquire);
-    if (!client || !g_getLocalPlayer) return nullptr;
-    return g_getLocalPlayer(client);
-}
+bool readPlayerPositionOnTick(void* player, Vec3& out) {
+    if (!player || reinterpret_cast<std::uintptr_t>(player) < 0x10000) return false;
 
-bool getPlayerPosition(void* player, Vec3& out) {
-    if (!player || reinterpret_cast<std::uintptr_t>(player) < 0x1000) return false;
     const auto actor = reinterpret_cast<std::uintptr_t>(player);
     const auto stateVector = *reinterpret_cast<std::uintptr_t*>(actor + OFF_ACTOR_STATE_VECTOR_COMPONENT);
-    if (stateVector < 0x1000) return false;
-    out = *reinterpret_cast<Vec3*>(stateVector);
+    if (stateVector < 0x10000 || (stateVector & 0x3) != 0) return false;
+
+    const Vec3 position = *reinterpret_cast<const Vec3*>(stateVector);
+    if (!std::isfinite(position.x) || !std::isfinite(position.y) || !std::isfinite(position.z)) return false;
+    if (std::fabs(position.x) > 30000000.0f || std::fabs(position.z) > 30000000.0f || std::fabs(position.y) > 100000.0f) return false;
+
+    out = position;
+    return true;
+}
+
+void publishPlayerPosition(const Vec3& position) {
+    g_playerX.store(position.x, std::memory_order_relaxed);
+    g_playerY.store(position.y, std::memory_order_relaxed);
+    g_playerZ.store(position.z, std::memory_order_relaxed);
+    g_lastPlayerTickMs.store(steadyMillis(), std::memory_order_release);
+    g_playerPositionValid.store(true, std::memory_order_release);
+}
+
+bool latestPlayerPosition(Vec3& out) {
+    if (!g_playerPositionValid.load(std::memory_order_acquire)) return false;
+
+    const std::uint64_t then = g_lastPlayerTickMs.load(std::memory_order_acquire);
+    const std::uint64_t now = steadyMillis();
+    if (!then || now < then || now - then > 1500) {
+        g_playerPositionValid.store(false, std::memory_order_release);
+        return false;
+    }
+
+    out.x = g_playerX.load(std::memory_order_relaxed);
+    out.y = g_playerY.load(std::memory_order_relaxed);
+    out.z = g_playerZ.load(std::memory_order_relaxed);
     return std::isfinite(out.x) && std::isfinite(out.y) && std::isfinite(out.z);
 }
 
@@ -158,7 +189,7 @@ void drawPet(void* levelRenderer, void* screenContext) {
     if (!levelRenderer || !screenContext || !g_tessBegin || !g_tessColor || !g_tessVertex || !g_renderMesh) return;
 
     Vec3 playerPos{};
-    if (!getPlayerPosition(getLocalPlayer(), playerPos)) {
+    if (!latestPlayerPosition(playerPos)) {
         g_petInitialized = false;
         return;
     }
@@ -166,10 +197,12 @@ void drawPet(void* levelRenderer, void* screenContext) {
 
     const auto screen = reinterpret_cast<std::uintptr_t>(screenContext);
     const auto renderer = reinterpret_cast<std::uintptr_t>(levelRenderer);
+    if (screen < 0x10000 || renderer < 0x10000) return;
+
     const auto tessAddress = *reinterpret_cast<std::uintptr_t*>(screen + OFF_SCREEN_CONTEXT_TESSELLATOR);
     const auto colorAddress = *reinterpret_cast<std::uintptr_t*>(screen + OFF_SCREEN_CONTEXT_COLOR_HOLDER);
     const auto lrp = *reinterpret_cast<std::uintptr_t*>(renderer + OFF_LEVEL_RENDERER_PLAYER);
-    if (tessAddress < 0x1000 || colorAddress < 0x1000 || lrp < 0x1000) return;
+    if (tessAddress < 0x10000 || colorAddress < 0x10000 || lrp < 0x10000) return;
 
     void* tessellator = reinterpret_cast<void*>(tessAddress);
     float* colorHolder = reinterpret_cast<float*>(colorAddress);
@@ -229,12 +262,19 @@ void drawPet(void* levelRenderer, void* screenContext) {
 
     char pad[0x58]{};
     g_renderMesh(screenContext, tessellator, material, pad);
-    colorHolder[0]=savedColor[0]; colorHolder[1]=savedColor[1]; colorHolder[2]=savedColor[2]; colorHolder[3]=savedColor[3];
+
+    colorHolder[0]=savedColor[0];
+    colorHolder[1]=savedColor[1];
+    colorHolder[2]=savedColor[2];
+    colorHolder[3]=savedColor[3];
 }
 
-void* clientUpdateHook(void* clientInstance, bool value) {
-    if (clientInstance) g_clientInstance.store(clientInstance, std::memory_order_release);
-    return g_clientUpdateOriginal ? g_clientUpdateOriginal(clientInstance, value) : nullptr;
+void normalTickHook(void* player) {
+    Vec3 position{};
+    if (readPlayerPositionOnTick(player, position)) {
+        publishPlayerPosition(position);
+    }
+    if (g_normalTickOriginal) g_normalTickOriginal(player);
 }
 
 void renderLevelHook(void* self, void* screenContext, void* a3) {
@@ -243,25 +283,25 @@ void renderLevelHook(void* self, void* screenContext, void* a3) {
 }
 
 bool installHooks() {
-    if (pl::memory::hook(g_clientUpdateTarget,
-                         reinterpret_cast<void*>(&clientUpdateHook),
-                         reinterpret_cast<void**>(&g_clientUpdateOriginal)) != 0) {
-        FP_LOGE("Failed to hook ClientInstanceUpdate.");
+    if (pl::memory::hook(g_normalTickTarget,
+                         reinterpret_cast<void*>(&normalTickHook),
+                         reinterpret_cast<void**>(&g_normalTickOriginal)) != 0) {
+        FP_LOGE("Failed to hook NormalTick.");
         return false;
     }
-    g_clientHooked = true;
+    g_tickHooked = true;
 
     if (pl::memory::hook(g_renderLevelTarget,
                          reinterpret_cast<void*>(&renderLevelHook),
                          reinterpret_cast<void**>(&g_renderLevelOriginal)) != 0) {
         FP_LOGE("Failed to hook RenderLevel.");
-        pl::memory::unhook(g_clientUpdateTarget, reinterpret_cast<void*>(&clientUpdateHook));
-        g_clientHooked = false;
-        g_clientUpdateOriginal = nullptr;
+        pl::memory::unhook(g_normalTickTarget, reinterpret_cast<void*>(&normalTickHook));
+        g_tickHooked = false;
+        g_normalTickOriginal = nullptr;
         return false;
     }
     g_renderHooked = true;
-    FP_LOGI("Flying Pet standalone enabled. BedrockTools is not required.");
+    FP_LOGI("Flying Pet safe standalone enabled.");
     return true;
 }
 
@@ -269,14 +309,16 @@ void removeHooks() {
     if (g_renderHooked && g_renderLevelTarget) {
         pl::memory::unhook(g_renderLevelTarget, reinterpret_cast<void*>(&renderLevelHook));
     }
-    if (g_clientHooked && g_clientUpdateTarget) {
-        pl::memory::unhook(g_clientUpdateTarget, reinterpret_cast<void*>(&clientUpdateHook));
+    if (g_tickHooked && g_normalTickTarget) {
+        pl::memory::unhook(g_normalTickTarget, reinterpret_cast<void*>(&normalTickHook));
     }
+
     g_renderHooked = false;
-    g_clientHooked = false;
+    g_tickHooked = false;
     g_renderLevelOriginal = nullptr;
-    g_clientUpdateOriginal = nullptr;
-    g_clientInstance.store(nullptr, std::memory_order_release);
+    g_normalTickOriginal = nullptr;
+    g_playerPositionValid.store(false, std::memory_order_release);
+    g_lastPlayerTickMs.store(0, std::memory_order_release);
     g_petInitialized = false;
 }
 
@@ -288,7 +330,7 @@ public:
     }
 
     bool load(pl::mod::ModContext&) {
-        FP_LOGI("Flying Pet standalone loaded.");
+        FP_LOGI("Flying Pet safe standalone loaded.");
         return true;
     }
 
