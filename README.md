@@ -2,13 +2,14 @@
 
 Mod nativo C++20 para Minecraft Bedrock no Android via LeviLauncher.
 
-A v0.2.0 é **standalone**: o mod não precisa do BedrockTools instalado. Ele usa o Preloader para localizar diretamente no `libminecraftpe.so` as funções necessárias e desenha um pequeno pet 3D cliente-side que voa perto do jogador, balança verticalmente, bate as asas e acompanha o jogador com movimento suavizado.
+A **v0.3.0** é a primeira build funcional depois da sequência de diagnósticos A–H. O crash foi isolado na variante antiga de `RenderMeshImmediately`; a versão atual usa `RenderMeshImmediately2`, que passou no aparelho de teste com `TessellatorBegin`, `TessellatorColor`, `TessellatorVertex` e envio do mesh completo retornando com segurança.
 
 ## Requisitos
 
 - Android arm64-v8a
 - LeviLauncher
 - Minecraft Bedrock compatível com as signatures/offsets atuais do projeto
+- Não precisa do BedrockTools instalado
 
 ## Instalação
 
@@ -17,35 +18,49 @@ A v0.2.0 é **standalone**: o mod não precisa do BedrockTools instalado. Ele us
 3. Baixe o artifact `FlyingPet-arm64-v8a`.
 4. Extraia `FlyingPet.levipack` do artifact.
 5. Importe o `.levipack` pelo gerenciador de mods do LeviLauncher.
-6. Habilite somente o Flying Pet e abra o Minecraft pelo LeviLauncher.
+6. Habilite o Flying Pet e abra o Minecraft pelo LeviLauncher.
 
-## Como a v0.2.0 funciona
+## Como a v0.3.0 funciona
 
-- `pl::memory::resolveSignature` localiza funções diretamente em `libminecraftpe.so`.
-- Um hook de `ClientInstanceUpdate` captura o `ClientInstance` atual.
-- `ClientInstanceGetLocalPlayer` obtém o jogador local.
-- A posição vem do `StateVectorComponent` do Actor.
-- O alvo do pet orbita aproximadamente 1,55 bloco ao redor do jogador.
-- O pet fica cerca de 1,75 bloco acima da posição do jogador.
-- Um `lerp` suaviza o movimento.
-- O pet é renderizado em `RenderLevel` usando o Tessellator do Minecraft.
-- As asas usam uma animação senoidal simples.
+- Resolve as funções diretamente em `libminecraftpe.so` com `pl::memory::resolveSignature`.
+- Usa `NormalTick` para ler a posição do jogador pelo `StateVectorComponent` em `Actor + 0x208`.
+- O pet fica voando próximo ao jogador e faz uma órbita suave ao redor dele.
+- O movimento é suavizado para o pet não teleportar a cada tick.
+- O corpo é um cubo 3D em linhas, com rosto, antenas, cauda e duas asas animadas.
+- A posição da câmera vem de `LevelRendererPlayer + 0x61C`.
+- A renderização usa o Tessellator do Minecraft e a variante validada `RenderMeshImmediately2`.
+- Há um aquecimento curto de 30 frames antes do primeiro desenho para evitar renderização durante a inicialização do mundo.
+
+## O que foi validado nos diagnósticos
+
+- `NormalTick`: seguro
+- `RenderLevel`: seguro
+- `Actor + 0x208`: seguro
+- `ScreenContext + 0xB8` (Tessellator): seguro
+- `LevelRenderer + 0x420`: seguro
+- câmera em `+0x61C`: segura
+- `ColorHolder` em `ScreenContext + 0x30`: seguro
+- material em `LevelRendererPlayer + 0x1030`: seguro
+- `TessellatorBegin`: seguro
+- `TessellatorColor`: seguro
+- `TessellatorVertex`: seguro
+- `RenderMeshImmediately`: causava crash nesta build do jogo
+- `RenderMeshImmediately2`: validado com sucesso
 
 ## Limitações
 
 O pet ainda é **visual e cliente-side**. Ele não é uma entidade real do mundo: outros jogadores não veem o pet, ele não tem colisão, vida, inventário nem IA do servidor.
 
-Como o mod usa funções e offsets internos do Minecraft, uma atualização do jogo pode exigir novas signatures/offsets. Quando alguma signature não for encontrada, o Logcat do mod mostra exatamente qual nome falhou.
+Como o mod usa funções e offsets internos do Minecraft, uma atualização do jogo pode exigir novas signatures/offsets.
 
 ## Próximos passos
 
 - Menu no LeviLauncher para ativar/desativar o pet
 - Escolher distância, altura e velocidade
-- Pet ficar atrás ou ao lado do jogador em vez de orbitar
+- Mais modelos e estilos
 - Textura/modelo próprio
-- Mais tipos de pet
 - Nome acima do pet
-- Animações extras
+- Mais animações
 
 ## Créditos técnicos
 
