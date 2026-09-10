@@ -18,10 +18,10 @@ def main() -> int:
 
     manifest = {
         "type": "preload-native",
-        "name": "Flying Pet Diagnostic D",
+        "name": "Flying Pet Diagnostic E",
         "author": "Victor",
-        "description": "Crash-isolation build: probes camera, ColorHolder and material holder; no drawing calls.",
-        "version": "0.2.5",
+        "description": "Crash-isolation build: probes Actor+0x208 StateVectorComponent and Player position; no drawing calls.",
+        "version": "0.2.6",
         "entry": "libFlyingPet.so",
         "overwrite_files": [],
         "overwrite_folders": []
