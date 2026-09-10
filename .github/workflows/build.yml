@@ -29,7 +29,31 @@ jobs:
           xmake f -y -p android -a arm64-v8a -m release --ndk="$ANDROID_SDK_ROOT/ndk/28.2.13676358"
 
       - name: Build
-        run: xmake -vD -y
+        shell: bash
+        run: |
+          set -o pipefail
+          xmake -vD -y 2>&1 | tee build.log
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            echo "::group::Build failure excerpt"
+            tail -n 180 build.log
+            echo "::endgroup::"
+            grep -E '(^|[[:space:]])(error:|fatal:|undefined reference|xmake: error)' build.log | tail -n 50 | while IFS= read -r line; do
+              line="${line//'%'/'%25'}"
+              line="${line//$'\r'/'%0D'}"
+              line="${line//$'\n'/'%0A'}"
+              echo "::error::$line"
+            done || true
+          fi
+          exit "$status"
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: FlyingPet-build-log
+          path: build.log
+          if-no-files-found: ignore
 
       - name: Collect package
         run: |
