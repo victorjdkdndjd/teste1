@@ -18,10 +18,10 @@ def main() -> int:
 
     manifest = {
         "type": "preload-native",
-        "name": "Flying Pet Diagnostic B",
+        "name": "Flying Pet Diagnostic C",
         "author": "Victor",
-        "description": "Crash-isolation build: NormalTick + RenderLevel hooks, no render memory reads.",
-        "version": "0.2.3",
+        "description": "Crash-isolation build: probes ScreenContext+0xB8 and LevelRenderer+0x420 only; no drawing.",
+        "version": "0.2.4",
         "entry": "libFlyingPet.so",
         "overwrite_files": [],
         "overwrite_folders": []
