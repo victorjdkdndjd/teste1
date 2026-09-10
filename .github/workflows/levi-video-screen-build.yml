@@ -24,6 +24,12 @@ jobs:
           base64 -d levivideo/source.b64 > levivideo/source.zip
           unzip -t levivideo/source.zip
           unzip -q levivideo/source.zip -d levivideo/unpacked
+          src="levivideo/unpacked/LeviVideoScreen-v0.1.0-source"
+          # LeviLaunchroid v1.5.21 pins preloader-android to this exact commit.
+          sed -i 's/GIT_TAG 0.2.2/GIT_TAG 7ca94daedfa30d6d4c265fc9b591768e8dc1f5af/' "$src/CMakeLists.txt"
+          sed -i 's/set(MOD_VERSION "0.1.0"/set(MOD_VERSION "0.1.1"/' "$src/CMakeLists.txt"
+          grep -n 'GIT_TAG 7ca94daedfa30d6d4c265fc9b591768e8dc1f5af' "$src/CMakeLists.txt"
+          grep -n 'MOD_VERSION "0.1.1"' "$src/CMakeLists.txt"
           sha256sum levivideo/source.zip
 
       - name: Set up Android SDK
@@ -48,7 +54,7 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          p="levivideo/unpacked/LeviVideoScreen-v0.1.0-source/build-arm64-v8a/levi_video_screen-0.1.0-arm64-v8a.levipack"
+          p="levivideo/unpacked/LeviVideoScreen-v0.1.0-source/build-arm64-v8a/levi_video_screen-0.1.1-arm64-v8a.levipack"
           test -f "$p"
           unzip -t "$p"
           unzip -l "$p"
@@ -59,6 +65,6 @@ jobs:
       - name: Upload LeviPack
         uses: actions/upload-artifact@v4
         with:
-          name: levi-video-screen-arm64
+          name: levi-video-screen-arm64-v0.1.1
           path: levivideo/out/*.levipack
           if-no-files-found: error
