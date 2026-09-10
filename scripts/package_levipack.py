@@ -18,10 +18,10 @@ def main() -> int:
 
     manifest = {
         "type": "preload-native",
-        "name": "Flying Pet Diagnostic F",
+        "name": "Flying Pet Diagnostic G",
         "author": "Victor",
-        "description": "Crash-isolation build: delayed guarded one-line Tessellator/RenderMesh pipeline with step-by-step logs.",
-        "version": "0.2.7",
+        "description": "Crash-isolation build: tests BedrockTools-preferred RenderMeshImmediately2 after the old variant crashed.",
+        "version": "0.2.8",
         "entry": "libFlyingPet.so",
         "overwrite_files": [],
         "overwrite_folders": []
