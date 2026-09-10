@@ -18,10 +18,10 @@ def main() -> int:
 
     manifest = {
         "type": "preload-native",
-        "name": "Flying Pet Diagnostic H",
+        "name": "Flying Pet",
         "author": "Victor",
-        "description": "Crash-isolation build: NormalTick control plus a fast 30-frame RenderMeshImmediately2 probe.",
-        "version": "0.2.9",
+        "description": "Standalone flying companion for LeviLauncher. Uses the validated RenderMeshImmediately2 pipeline and follows the local player with smooth hovering motion.",
+        "version": "0.3.0",
         "entry": "libFlyingPet.so",
         "overwrite_files": [],
         "overwrite_folders": []
