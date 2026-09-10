@@ -2,44 +2,42 @@
 
 Mod nativo C++20 para Minecraft Bedrock no Android via LeviLauncher.
 
-O mod desenha um pequeno pet 3D cliente-side que voa perto do jogador, balança verticalmente, bate as asas e acompanha o jogador com movimento suavizado. Se o jogador se afastar muito, o pet acelera para alcançar.
+A v0.2.0 é **standalone**: o mod não precisa do BedrockTools instalado. Ele usa o Preloader para localizar diretamente no `libminecraftpe.so` as funções necessárias e desenha um pequeno pet 3D cliente-side que voa perto do jogador, balança verticalmente, bate as asas e acompanha o jogador com movimento suavizado.
 
 ## Requisitos
 
 - Android arm64-v8a
 - LeviLauncher
-- Minecraft Bedrock compatível com a versão do BedrockTools instalada
-- BedrockTools instalado e habilitado
-
-O Flying Pet usa a API runtime do `libBedrockTools.so` para resolver as funções internas do Minecraft. Isso evita colocar signatures fixas do `libminecraftpe.so` diretamente neste protótipo.
+- Minecraft Bedrock compatível com as signatures/offsets atuais do projeto
 
 ## Instalação
 
-1. Instale e habilite o BedrockTools no LeviLauncher.
-2. Abra a aba **Actions** deste repositório.
-3. Entre no workflow **Build Flying Pet**.
-4. Baixe o artifact `FlyingPet-arm64-v8a` da execução concluída.
-5. Extraia `FlyingPet.levipack` do artifact.
-6. Importe o `.levipack` pelo gerenciador de mods do LeviLauncher.
-7. Deixe BedrockTools e Flying Pet habilitados e abra o Minecraft pelo LeviLauncher.
+1. Abra a aba **Actions** deste repositório.
+2. Entre no workflow **Build Flying Pet** mais recente que estiver verde.
+3. Baixe o artifact `FlyingPet-arm64-v8a`.
+4. Extraia `FlyingPet.levipack` do artifact.
+5. Importe o `.levipack` pelo gerenciador de mods do LeviLauncher.
+6. Habilite somente o Flying Pet e abra o Minecraft pelo LeviLauncher.
 
-## Como o pet funciona
+## Como a v0.2.0 funciona
 
-- O jogador local é obtido por `ClientInstanceGetLocalPlayer`.
-- A posição é lida do `StateVectorComponent` do Actor.
+- `pl::memory::resolveSignature` localiza funções diretamente em `libminecraftpe.so`.
+- Um hook de `ClientInstanceUpdate` captura o `ClientInstance` atual.
+- `ClientInstanceGetLocalPlayer` obtém o jogador local.
+- A posição vem do `StateVectorComponent` do Actor.
 - O alvo do pet orbita aproximadamente 1,55 bloco ao redor do jogador.
 - O pet fica cerca de 1,75 bloco acima da posição do jogador.
 - Um `lerp` suaviza o movimento.
-- O pet é renderizado no `RenderLevel` usando o Tessellator do Minecraft.
+- O pet é renderizado em `RenderLevel` usando o Tessellator do Minecraft.
 - As asas usam uma animação senoidal simples.
 
-## Limitações da v0.1.0
+## Limitações
 
-Este primeiro protótipo é **visual e cliente-side**. Ele não é uma entidade real do mundo: outros jogadores não veem o pet, ele não tem colisão, vida, inventário nem IA do servidor.
+O pet ainda é **visual e cliente-side**. Ele não é uma entidade real do mundo: outros jogadores não veem o pet, ele não tem colisão, vida, inventário nem IA do servidor.
 
-Também depende dos offsets/signatures que a versão instalada do BedrockTools suporta. Se o Minecraft atualizar e o BedrockTools ainda não suportar a nova versão, o pet pode não iniciar.
+Como o mod usa funções e offsets internos do Minecraft, uma atualização do jogo pode exigir novas signatures/offsets. Quando alguma signature não for encontrada, o Logcat do mod mostra exatamente qual nome falhou.
 
-## Próximos passos possíveis
+## Próximos passos
 
 - Menu no LeviLauncher para ativar/desativar o pet
 - Escolher distância, altura e velocidade
@@ -48,8 +46,7 @@ Também depende dos offsets/signatures que a versão instalada do BedrockTools s
 - Mais tipos de pet
 - Nome acima do pet
 - Animações extras
-- Versão independente do BedrockTools
 
 ## Créditos técnicos
 
-O projeto usa a API pública/runtime do BedrockTools como referência para ClientInstance, signatures, offsets e renderização no Minecraft Bedrock Android.
+O projeto usa o Preloader Android e toma o BedrockTools como referência técnica para signatures, offsets e padrões de renderização do Minecraft Bedrock Android.
