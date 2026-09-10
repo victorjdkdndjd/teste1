@@ -5,6 +5,7 @@
 #include <android/log.h>
 
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -39,7 +40,10 @@ constexpr std::size_t OFF_LEVEL_RENDERER_PLAYER = 0x420;
 constexpr std::size_t OFF_CAMERA_POS = 0x61C;
 constexpr std::size_t OFF_SELECTION_OVERLAY_MATERIAL = 0x1030;
 constexpr std::uint64_t RENDER_WARMUP_FRAMES = 30;
-constexpr int PET_LINE_COUNT = 28;
+
+// v0.3.0 used 28 lines. v0.3.1 adds 12 detail lines to give the body
+// a denser, texture-like pixel pattern while keeping the proven line pipeline.
+constexpr int PET_LINE_COUNT = 40;
 constexpr int PET_VERTEX_COUNT = PET_LINE_COUNT * 2;
 
 constexpr std::string_view SIG_NORMAL_TICK =
@@ -75,17 +79,20 @@ bool g_tickHooked = false;
 bool g_renderHooked = false;
 
 std::atomic<bool> g_playerValid{false};
-std::atomic<bool> g_petInitialized{false};
 std::atomic<float> g_playerX{0.0f};
 std::atomic<float> g_playerY{0.0f};
 std::atomic<float> g_playerZ{0.0f};
-std::atomic<float> g_petX{0.0f};
-std::atomic<float> g_petY{0.0f};
-std::atomic<float> g_petZ{0.0f};
-std::atomic<std::uint64_t> g_tickCounter{0};
 std::atomic<std::uint64_t> g_renderFrames{0};
 std::atomic<bool> g_renderStarted{false};
 std::atomic<bool> g_loggedMaterialWait{false};
+
+// Render-thread state. Keeping the visual interpolation on the render thread
+// makes movement smooth at the actual FPS instead of stepping at 20 TPS.
+Vec3 g_renderPet{0.0f, 0.0f, 0.0f};
+bool g_renderPetInitialized = false;
+bool g_renderClockInitialized = false;
+std::chrono::steady_clock::time_point g_lastRenderTime{};
+std::chrono::steady_clock::time_point g_animStartTime{};
 
 bool plausible(std::uintptr_t p) {
     return p >= 0x10000;
@@ -120,48 +127,6 @@ void normalTickHook(void* actor) {
     g_playerY.store(player.y, std::memory_order_relaxed);
     g_playerZ.store(player.z, std::memory_order_relaxed);
     g_playerValid.store(true, std::memory_order_release);
-
-    const auto tick = g_tickCounter.fetch_add(1, std::memory_order_relaxed) + 1;
-    const float t = static_cast<float>(tick);
-
-    // The pet gently orbits the player while hovering in the air.
-    const float orbit = t * 0.045f;
-    const float targetX = player.x + std::cos(orbit) * 1.45f;
-    const float targetY = player.y + 1.60f + std::sin(t * 0.12f) * 0.14f;
-    const float targetZ = player.z + std::sin(orbit) * 1.45f;
-
-    if (!g_petInitialized.load(std::memory_order_acquire)) {
-        g_petX.store(targetX, std::memory_order_relaxed);
-        g_petY.store(targetY, std::memory_order_relaxed);
-        g_petZ.store(targetZ, std::memory_order_relaxed);
-        g_petInitialized.store(true, std::memory_order_release);
-        FP_LOGI("Flying pet initialized near the player.");
-        return;
-    }
-
-    float px = g_petX.load(std::memory_order_relaxed);
-    float py = g_petY.load(std::memory_order_relaxed);
-    float pz = g_petZ.load(std::memory_order_relaxed);
-
-    const float dx = targetX - px;
-    const float dy = targetY - py;
-    const float dz = targetZ - pz;
-    const float distSq = dx * dx + dy * dy + dz * dz;
-
-    if (distSq > 100.0f) {
-        px = targetX;
-        py = targetY;
-        pz = targetZ;
-    } else {
-        constexpr float follow = 0.20f;
-        px += dx * follow;
-        py += dy * follow;
-        pz += dz * follow;
-    }
-
-    g_petX.store(px, std::memory_order_relaxed);
-    g_petY.store(py, std::memory_order_relaxed);
-    g_petZ.store(pz, std::memory_order_release);
 }
 
 void renderLevelHook(void* self, void* screenContext, void* a3) {
@@ -169,7 +134,7 @@ void renderLevelHook(void* self, void* screenContext, void* a3) {
 
     const auto frame = g_renderFrames.fetch_add(1, std::memory_order_relaxed) + 1;
     if (frame < RENDER_WARMUP_FRAMES) return;
-    if (!g_playerValid.load(std::memory_order_acquire) || !g_petInitialized.load(std::memory_order_acquire)) return;
+    if (!g_playerValid.load(std::memory_order_acquire)) return;
 
     const auto selfAddr = reinterpret_cast<std::uintptr_t>(self);
     const auto screenAddr = reinterpret_cast<std::uintptr_t>(screenContext);
@@ -194,25 +159,70 @@ void renderLevelHook(void* self, void* screenContext, void* a3) {
         return;
     }
 
-    void* tessellator = reinterpret_cast<void*>(tessAddr);
-    void* material = reinterpret_cast<void*>(materialHolder);
+    const Vec3 player{
+        g_playerX.load(std::memory_order_relaxed),
+        g_playerY.load(std::memory_order_relaxed),
+        g_playerZ.load(std::memory_order_acquire)
+    };
+    if (!std::isfinite(player.x) || !std::isfinite(player.y) || !std::isfinite(player.z)) return;
 
-    const Vec3 center{
-        g_petX.load(std::memory_order_relaxed),
-        g_petY.load(std::memory_order_relaxed),
-        g_petZ.load(std::memory_order_acquire)
+    const auto now = std::chrono::steady_clock::now();
+    if (!g_renderClockInitialized) {
+        g_renderClockInitialized = true;
+        g_lastRenderTime = now;
+        g_animStartTime = now;
+    }
+
+    float dt = std::chrono::duration<float>(now - g_lastRenderTime).count();
+    g_lastRenderTime = now;
+    if (!std::isfinite(dt) || dt <= 0.0f || dt > 0.10f) dt = 1.0f / 60.0f;
+
+    const float t = std::chrono::duration<float>(now - g_animStartTime).count();
+
+    // Frame-rate independent orbit and hover target.
+    const float orbit = t * 0.82f;
+    const Vec3 target{
+        player.x + std::cos(orbit) * 1.45f,
+        player.y + 1.62f + std::sin(t * 1.70f) * 0.10f,
+        player.z + std::sin(orbit) * 1.45f
     };
 
-    if (!std::isfinite(center.x) || !std::isfinite(center.y) || !std::isfinite(center.z)) return;
+    if (!g_renderPetInitialized) {
+        g_renderPet = target;
+        g_renderPetInitialized = true;
+        FP_LOGI("Flying pet initialized with frame interpolation.");
+    } else {
+        const float dx = target.x - g_renderPet.x;
+        const float dy = target.y - g_renderPet.y;
+        const float dz = target.z - g_renderPet.z;
+        const float distSq = dx * dx + dy * dy + dz * dz;
 
-    const float wingWave = std::sin(static_cast<float>(frame) * 0.30f) * 0.18f;
+        if (distSq > 100.0f) {
+            g_renderPet = target;
+        } else {
+            // Exponential smoothing keeps the same feel at 30, 60 or 120 FPS.
+            const float follow = 1.0f - std::exp(-5.8f * dt);
+            g_renderPet.x += dx * follow;
+            g_renderPet.y += dy * follow;
+            g_renderPet.z += dz * follow;
+        }
+    }
+
+    const Vec3 center = g_renderPet;
+    const float wingWave = std::sin(t * 8.5f) * 0.20f;
+    const float wingMicro = std::sin(t * 17.0f) * 0.025f;
     constexpr float h = 0.28f;
     const float frontZ = center.z + h + 0.012f;
 
     const Color body{1.00f, 0.58f, 0.12f, 1.00f};
+    const Color bodyLight{1.00f, 0.78f, 0.30f, 0.92f};
+    const Color bodyDark{0.72f, 0.30f, 0.05f, 0.92f};
     const Color wing{0.20f, 0.85f, 1.00f, 0.95f};
     const Color face{1.00f, 1.00f, 1.00f, 1.00f};
     const Color accent{0.25f, 1.00f, 0.35f, 1.00f};
+
+    void* tessellator = reinterpret_cast<void*>(tessAddr);
+    void* material = reinterpret_cast<void*>(materialHolder);
 
     auto cameraRelative = [&](const Vec3& p) -> Vec3 {
         return Vec3{p.x - cam[0], p.y - cam[1], p.z - cam[2]};
@@ -245,26 +255,47 @@ void renderLevelHook(void* self, void* screenContext, void* a3) {
     emitLine(p000, p001, body); emitLine(p100, p101, body);
     emitLine(p110, p111, body); emitLine(p010, p011, body);
 
+    // 12 extra body detail lines: a simple pixel-like visual texture.
+    const float zFrontDetail = center.z + h + 0.006f;
+    emitLine(Vec3{center.x - h, center.y - 0.14f, zFrontDetail}, Vec3{center.x + h, center.y - 0.14f, zFrontDetail}, bodyDark);
+    emitLine(Vec3{center.x - h, center.y, zFrontDetail}, Vec3{center.x + h, center.y, zFrontDetail}, bodyLight);
+    emitLine(Vec3{center.x - h, center.y + 0.14f, zFrontDetail}, Vec3{center.x + h, center.y + 0.14f, zFrontDetail}, bodyDark);
+    emitLine(Vec3{center.x - 0.14f, center.y - h, zFrontDetail}, Vec3{center.x - 0.14f, center.y + h, zFrontDetail}, bodyLight);
+    emitLine(Vec3{center.x, center.y - h, zFrontDetail}, Vec3{center.x, center.y + h, zFrontDetail}, bodyDark);
+    emitLine(Vec3{center.x + 0.14f, center.y - h, zFrontDetail}, Vec3{center.x + 0.14f, center.y + h, zFrontDetail}, bodyLight);
+
+    const float yTopDetail = center.y + h + 0.006f;
+    emitLine(Vec3{center.x - h, yTopDetail, center.z - 0.14f}, Vec3{center.x + h, yTopDetail, center.z - 0.14f}, bodyDark);
+    emitLine(Vec3{center.x - h, yTopDetail, center.z}, Vec3{center.x + h, yTopDetail, center.z}, bodyLight);
+    emitLine(Vec3{center.x - h, yTopDetail, center.z + 0.14f}, Vec3{center.x + h, yTopDetail, center.z + 0.14f}, bodyDark);
+
+    const float xSideDetail = center.x + h + 0.006f;
+    emitLine(Vec3{xSideDetail, center.y - 0.14f, center.z - h}, Vec3{xSideDetail, center.y - 0.14f, center.z + h}, bodyLight);
+    emitLine(Vec3{xSideDetail, center.y, center.z - h}, Vec3{xSideDetail, center.y, center.z + h}, bodyDark);
+    emitLine(Vec3{xSideDetail, center.y + 0.14f, center.z - h}, Vec3{xSideDetail, center.y + 0.14f, center.z + h}, bodyLight);
+
     // Two animated triangular wings: 6 edges.
+    const float wingLiftLeft = wingWave + wingMicro;
+    const float wingLiftRight = -wingWave + wingMicro;
     const Vec3 l0{center.x - h, center.y + 0.10f, center.z};
-    const Vec3 l1{center.x - 0.82f, center.y + 0.34f + wingWave, center.z - 0.05f};
-    const Vec3 l2{center.x - 0.78f, center.y - 0.12f - wingWave * 0.35f, center.z + 0.08f};
+    const Vec3 l1{center.x - 0.82f, center.y + 0.34f + wingLiftLeft, center.z - 0.05f};
+    const Vec3 l2{center.x - 0.78f, center.y - 0.12f - wingLiftLeft * 0.35f, center.z + 0.08f};
     emitLine(l0, l1, wing); emitLine(l1, l2, wing); emitLine(l2, l0, wing);
 
     const Vec3 r0{center.x + h, center.y + 0.10f, center.z};
-    const Vec3 r1{center.x + 0.82f, center.y + 0.34f - wingWave, center.z - 0.05f};
-    const Vec3 r2{center.x + 0.78f, center.y - 0.12f + wingWave * 0.35f, center.z + 0.08f};
+    const Vec3 r1{center.x + 0.82f, center.y + 0.34f + wingLiftRight, center.z - 0.05f};
+    const Vec3 r2{center.x + 0.78f, center.y - 0.12f - wingLiftRight * 0.35f, center.z + 0.08f};
     emitLine(r0, r1, wing); emitLine(r1, r2, wing); emitLine(r2, r0, wing);
 
     // Antennas: 4 edges.
     const Vec3 aL0{center.x - 0.11f, center.y + h, center.z + 0.05f};
-    const Vec3 aL1{center.x - 0.18f, center.y + 0.48f, center.z + 0.08f};
-    const Vec3 aL2{center.x - 0.28f, center.y + 0.58f, center.z + 0.12f};
+    const Vec3 aL1{center.x - 0.18f, center.y + 0.48f + wingMicro, center.z + 0.08f};
+    const Vec3 aL2{center.x - 0.28f, center.y + 0.58f + wingMicro, center.z + 0.12f};
     emitLine(aL0, aL1, accent); emitLine(aL1, aL2, accent);
 
     const Vec3 aR0{center.x + 0.11f, center.y + h, center.z + 0.05f};
-    const Vec3 aR1{center.x + 0.18f, center.y + 0.48f, center.z + 0.08f};
-    const Vec3 aR2{center.x + 0.28f, center.y + 0.58f, center.z + 0.12f};
+    const Vec3 aR1{center.x + 0.18f, center.y + 0.48f + wingMicro, center.z + 0.08f};
+    const Vec3 aR2{center.x + 0.28f, center.y + 0.58f + wingMicro, center.z + 0.12f};
     emitLine(aR0, aR1, accent); emitLine(aR1, aR2, accent);
 
     // Eyes: 2 edges.
@@ -289,7 +320,7 @@ void renderLevelHook(void* self, void* screenContext, void* a3) {
     g_renderMesh2(screenContext, tessellator, material, pad);
 
     if (!g_renderStarted.exchange(true, std::memory_order_relaxed)) {
-        FP_LOGI("Flying pet rendering started safely with RenderMeshImmediately2.");
+        FP_LOGI("Flying pet v0.3.1 rendering started: smooth frame interpolation + detailed body.");
     }
 }
 
@@ -360,11 +391,12 @@ void removeHooks() {
     g_renderMesh2 = nullptr;
 
     g_playerValid.store(false, std::memory_order_relaxed);
-    g_petInitialized.store(false, std::memory_order_relaxed);
-    g_tickCounter.store(0, std::memory_order_relaxed);
     g_renderFrames.store(0, std::memory_order_relaxed);
     g_renderStarted.store(false, std::memory_order_relaxed);
     g_loggedMaterialWait.store(false, std::memory_order_relaxed);
+    g_renderPet = Vec3{0.0f, 0.0f, 0.0f};
+    g_renderPetInitialized = false;
+    g_renderClockInitialized = false;
 }
 
 class FlyingPetMod {
@@ -375,7 +407,7 @@ public:
     }
 
     bool load(pl::mod::ModContext&) {
-        FP_LOGI("Flying Pet v0.3.0 loaded.");
+        FP_LOGI("Flying Pet v0.3.1 loaded.");
         return true;
     }
 
