@@ -13,13 +13,14 @@ package("preloader")
 package_end()
 
 add_requires("preloader")
+add_requires("fmt 11.2.0")
 
 target("FlyingPet")
     set_kind("shared")
     set_languages("c++20")
     set_strip("all")
     add_files("src/main.cpp")
-    add_packages("preloader")
+    add_packages("preloader", "fmt")
 
     if is_plat("android") then
         add_cxflags("-fPIC", "-Oz", "-ffunction-sections", "-fdata-sections", "-flto", "-fno-unwind-tables", "-fno-asynchronous-unwind-tables", "-fno-stack-protector", "-fexceptions", "-fvisibility=hidden")
