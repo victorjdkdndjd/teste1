@@ -20,8 +20,8 @@ def main() -> int:
         "type": "preload-native",
         "name": "Flying Pet",
         "author": "Victor",
-        "description": "A small flying 3D pet that follows the local player.",
-        "version": "0.1.0",
+        "description": "Standalone flying 3D pet for Minecraft Bedrock on LeviLauncher.",
+        "version": "0.2.0",
         "entry": "libFlyingPet.so",
         "overwrite_files": [],
         "overwrite_folders": []
