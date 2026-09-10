@@ -1,0 +1,45 @@
+name: Build Flying Pet
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["main"]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android NDK r28c
+        run: yes | sdkmanager "ndk;28.2.13676358"
+
+      - name: Setup xmake
+        uses: xmake-io/github-action-setup-xmake@v1
+        with:
+          xmake-version: latest
+
+      - name: Configure
+        run: |
+          xmake f -y -p android -a arm64-v8a -m release --ndk="$ANDROID_SDK_ROOT/ndk/28.2.13676358"
+
+      - name: Build
+        run: xmake -y
+
+      - name: Collect package
+        run: |
+          mkdir -p dist
+          find build -type f -name "FlyingPet.levipack" -exec cp {} dist/FlyingPet.levipack \;
+          test -f dist/FlyingPet.levipack
+
+      - name: Upload levipack
+        uses: actions/upload-artifact@v4
+        with:
+          name: FlyingPet-arm64-v8a
+          path: dist/FlyingPet.levipack
+          if-no-files-found: error
