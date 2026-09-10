@@ -20,8 +20,8 @@ def main() -> int:
         "type": "preload-native",
         "name": "Flying Pet",
         "author": "Victor",
-        "description": "Standalone flying companion for LeviLauncher. Uses the validated RenderMeshImmediately2 pipeline and follows the local player with smooth hovering motion.",
-        "version": "0.3.0",
+        "description": "Standalone flying companion for LeviLauncher. v0.3.1 adds frame-rate independent smoothing, fluid wing motion and a denser pixel-like body detail while keeping the validated RenderMeshImmediately2 pipeline.",
+        "version": "0.3.1",
         "entry": "libFlyingPet.so",
         "overwrite_files": [],
         "overwrite_folders": []
