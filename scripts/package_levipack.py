@@ -18,10 +18,10 @@ def main() -> int:
 
     manifest = {
         "type": "preload-native",
-        "name": "Flying Pet",
+        "name": "Flying Pet Diagnostic A",
         "author": "Victor",
-        "description": "Standalone flying 3D pet for Minecraft Bedrock on LeviLauncher.",
-        "version": "0.2.1",
+        "description": "Crash-isolation build: NormalTick hook only, no rendering or Player memory reads.",
+        "version": "0.2.2",
         "entry": "libFlyingPet.so",
         "overwrite_files": [],
         "overwrite_folders": []
