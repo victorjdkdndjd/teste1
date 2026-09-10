@@ -21,7 +21,7 @@ def main() -> int:
         "name": "Flying Pet",
         "author": "Victor",
         "description": "Standalone flying 3D pet for Minecraft Bedrock on LeviLauncher.",
-        "version": "0.2.0",
+        "version": "0.2.1",
         "entry": "libFlyingPet.so",
         "overwrite_files": [],
         "overwrite_folders": []
