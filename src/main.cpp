@@ -5,6 +5,7 @@
 #include <android/log.h>
 
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
 #include <string_view>
 
@@ -16,9 +17,11 @@ constexpr std::string_view MC_MODULE = "libminecraftpe.so";
 #define FP_LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
 #define FP_LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
-// Diagnostic B: hook NormalTick + RenderLevel only.
-// RenderLevel calls the original function and logs a one-shot marker.
-// No Tessellator, camera, material or Actor offset is read.
+// Diagnostic C: NormalTick + RenderLevel are already known-safe.
+// This build probes ONLY two render object offsets and never draws anything.
+constexpr std::size_t OFF_SCREEN_CONTEXT_TESSELLATOR = 0xB8;
+constexpr std::size_t OFF_LEVEL_RENDERER_PLAYER = 0x420;
+
 constexpr std::string_view SIG_NORMAL_TICK =
     "? ? ? FC ? ? ? A9 ? ? ? A9 ? ? ? A9 ? ? ? A9 ? ? ? A9 ? ? ? A9 ? ? ? 91 ? ? ? D1 54 D0 3B D5 F3 03 00 AA ? ? ? F9 ? ? ? F8 ? ? ? 39";
 constexpr std::string_view SIG_RENDER_LEVEL =
@@ -36,38 +39,52 @@ bool g_renderHooked = false;
 
 std::atomic<bool> g_firstTickSeen{false};
 std::atomic<bool> g_firstRenderSeen{false};
-std::atomic<std::uint64_t> g_tickCount{0};
-std::atomic<std::uint64_t> g_renderCount{0};
+std::atomic<bool> g_offsetsProbed{false};
 
 void normalTickHook(void* actor) {
     if (g_normalTickOriginal) {
         g_normalTickOriginal(actor);
     }
 
-    const auto count = g_tickCount.fetch_add(1, std::memory_order_relaxed) + 1;
     if (!g_firstTickSeen.exchange(true, std::memory_order_relaxed)) {
-        FP_LOGI("Diagnostic B: first NormalTick reached safely. actor=%p", actor);
-    }
-    if ((count % 1200) == 0) {
-        FP_LOGI("Diagnostic B: NormalTick heartbeat count=%llu",
-                static_cast<unsigned long long>(count));
+        FP_LOGI("Diagnostic C: first NormalTick reached safely. actor=%p", actor);
     }
 }
 
 void renderLevelHook(void* self, void* screenContext, void* a3) {
-    // Diagnostic B deliberately does NOTHING before the original render call.
     if (g_renderLevelOriginal) {
         g_renderLevelOriginal(self, screenContext, a3);
     }
 
-    const auto count = g_renderCount.fetch_add(1, std::memory_order_relaxed) + 1;
     if (!g_firstRenderSeen.exchange(true, std::memory_order_relaxed)) {
-        FP_LOGI("Diagnostic B: first RenderLevel reached safely. self=%p screenContext=%p",
+        FP_LOGI("Diagnostic C: first RenderLevel reached safely. self=%p screenContext=%p",
                 self, screenContext);
     }
-    if ((count % 3600) == 0) {
-        FP_LOGI("Diagnostic B: RenderLevel heartbeat count=%llu",
-                static_cast<unsigned long long>(count));
+
+    // Probe only once. No nested dereference, no camera/material/Tessellator calls.
+    if (!g_offsetsProbed.exchange(true, std::memory_order_relaxed)) {
+        const auto selfAddr = reinterpret_cast<std::uintptr_t>(self);
+        const auto screenAddr = reinterpret_cast<std::uintptr_t>(screenContext);
+
+        if (selfAddr < 0x10000 || screenAddr < 0x10000) {
+            FP_LOGE("Diagnostic C: invalid base pointer(s): self=%p screenContext=%p",
+                    self, screenContext);
+            return;
+        }
+
+        const auto tessellator = *reinterpret_cast<const std::uintptr_t*>(
+            screenAddr + OFF_SCREEN_CONTEXT_TESSELLATOR);
+        FP_LOGI("Diagnostic C: ScreenContext+0xB8 read safely. tessellator=%p plausible=%s",
+                reinterpret_cast<void*>(tessellator),
+                tessellator >= 0x10000 ? "yes" : "no");
+
+        const auto levelRendererPlayer = *reinterpret_cast<const std::uintptr_t*>(
+            selfAddr + OFF_LEVEL_RENDERER_PLAYER);
+        FP_LOGI("Diagnostic C: LevelRenderer+0x420 read safely. levelRendererPlayer=%p plausible=%s",
+                reinterpret_cast<void*>(levelRendererPlayer),
+                levelRendererPlayer >= 0x10000 ? "yes" : "no");
+
+        FP_LOGI("Diagnostic C: offset probe complete. NO nested memory reads and NO drawing.");
     }
 }
 
@@ -76,18 +93,18 @@ bool resolveRuntime() {
     const auto render = pl::memory::resolveSignature(SIG_RENDER_LEVEL, MC_MODULE);
 
     if (!tick) {
-        FP_LOGE("Diagnostic B: NormalTick signature not found.");
+        FP_LOGE("Diagnostic C: NormalTick signature not found.");
         return false;
     }
     if (!render) {
-        FP_LOGE("Diagnostic B: RenderLevel signature not found.");
+        FP_LOGE("Diagnostic C: RenderLevel signature not found.");
         return false;
     }
 
     g_normalTickTarget = reinterpret_cast<void*>(tick);
     g_renderLevelTarget = reinterpret_cast<void*>(render);
-    FP_LOGI("Diagnostic B: NormalTick resolved at %p", g_normalTickTarget);
-    FP_LOGI("Diagnostic B: RenderLevel resolved at %p", g_renderLevelTarget);
+    FP_LOGI("Diagnostic C: NormalTick resolved at %p", g_normalTickTarget);
+    FP_LOGI("Diagnostic C: RenderLevel resolved at %p", g_renderLevelTarget);
     return true;
 }
 
@@ -97,7 +114,7 @@ bool installHooks() {
         reinterpret_cast<void*>(&normalTickHook),
         reinterpret_cast<void**>(&g_normalTickOriginal));
     if (result != 0) {
-        FP_LOGE("Diagnostic B: failed to hook NormalTick (code=%d).", result);
+        FP_LOGE("Diagnostic C: failed to hook NormalTick (code=%d).", result);
         return false;
     }
     g_tickHooked = true;
@@ -107,7 +124,7 @@ bool installHooks() {
         reinterpret_cast<void*>(&renderLevelHook),
         reinterpret_cast<void**>(&g_renderLevelOriginal));
     if (result != 0) {
-        FP_LOGE("Diagnostic B: failed to hook RenderLevel (code=%d).", result);
+        FP_LOGE("Diagnostic C: failed to hook RenderLevel (code=%d).", result);
         pl::memory::unhook(g_normalTickTarget, reinterpret_cast<void*>(&normalTickHook));
         g_tickHooked = false;
         g_normalTickOriginal = nullptr;
@@ -115,7 +132,7 @@ bool installHooks() {
     }
     g_renderHooked = true;
 
-    FP_LOGI("Diagnostic B enabled: RenderLevel hook active, but NO render memory reads.");
+    FP_LOGI("Diagnostic C enabled: probing offsets 0xB8 and 0x420 only; NO drawing.");
     return true;
 }
 
@@ -135,8 +152,7 @@ void removeHooks() {
     g_normalTickTarget = nullptr;
     g_firstTickSeen.store(false, std::memory_order_relaxed);
     g_firstRenderSeen.store(false, std::memory_order_relaxed);
-    g_tickCount.store(0, std::memory_order_relaxed);
-    g_renderCount.store(0, std::memory_order_relaxed);
+    g_offsetsProbed.store(false, std::memory_order_relaxed);
 }
 
 class FlyingPetMod {
@@ -147,7 +163,7 @@ public:
     }
 
     bool load(pl::mod::ModContext&) {
-        FP_LOGI("Flying Pet v0.2.3 Diagnostic B loaded.");
+        FP_LOGI("Flying Pet v0.2.4 Diagnostic C loaded.");
         return true;
     }
 
