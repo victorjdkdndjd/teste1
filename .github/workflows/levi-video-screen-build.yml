@@ -3,7 +3,7 @@ name: Levi Video Screen Build
 on:
   push:
     branches:
-      - build/levi-video-screen-v0.1.0
+      - build/levi-video-screen-v0.2.0
     paths:
       - 'levivideo/**'
       - '.github/workflows/levi-video-screen-build.yml'
@@ -22,15 +22,13 @@ jobs:
           set -euxo pipefail
           cat levivideo/chunk*.b64 > levivideo/source.b64
           base64 -d levivideo/source.b64 > levivideo/source.zip
+          echo 'f3e467465415a73c4945c6e285a9c8fe3d3ac533a38593c7bf0f2ed877415dff  levivideo/source.zip' | sha256sum -c -
           unzip -t levivideo/source.zip
           unzip -q levivideo/source.zip -d levivideo/unpacked
-          src="levivideo/unpacked/LeviVideoScreen-v0.1.0-source"
-          # LeviLaunchroid v1.5.21 pins preloader-android to this exact commit.
-          sed -i 's/GIT_TAG 0.2.2/GIT_TAG 7ca94daedfa30d6d4c265fc9b591768e8dc1f5af/' "$src/CMakeLists.txt"
-          sed -i 's/set(MOD_VERSION "0.1.0"/set(MOD_VERSION "0.1.1"/' "$src/CMakeLists.txt"
-          grep -n 'GIT_TAG 7ca94daedfa30d6d4c265fc9b591768e8dc1f5af' "$src/CMakeLists.txt"
-          grep -n 'MOD_VERSION "0.1.1"' "$src/CMakeLists.txt"
-          sha256sum levivideo/source.zip
+          src="levivideo/unpacked/LeviVideoScreen-v0.2.0-source"
+          test -d "$src"
+          grep -n 'MOD_VERSION "0.2.0"' "$src/CMakeLists.txt"
+          grep -n '7ca94daedfa30d6d4c265fc9b591768e8dc1f5af' "$src/CMakeLists.txt"
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
@@ -46,7 +44,7 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          cd levivideo/unpacked/LeviVideoScreen-v0.1.0-source
+          cd levivideo/unpacked/LeviVideoScreen-v0.2.0-source
           chmod +x scripts/package.sh
           ./scripts/package.sh
 
@@ -54,17 +52,21 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          p="levivideo/unpacked/LeviVideoScreen-v0.1.0-source/build-arm64-v8a/levi_video_screen-0.1.1-arm64-v8a.levipack"
+          p="levivideo/unpacked/LeviVideoScreen-v0.2.0-source/build-arm64-v8a/levi_video_screen-0.2.0-arm64-v8a.levipack"
           test -f "$p"
           unzip -t "$p"
           unzip -l "$p"
           unzip -p "$p" levi_video_screen/manifest.json
+          tmp="$(mktemp -d)"
+          unzip -q "$p" -d "$tmp"
+          file "$tmp/levi_video_screen/liblevi_video_screen.so"
+          test -f "$tmp/levi_video_screen/classes.dex"
           mkdir -p levivideo/out
-          cp "$p" levivideo/out/
+          cp "$p" levivideo/out/LeviVideoScreen-v0.2.0-arm64-v8a.levipack
 
       - name: Upload LeviPack
         uses: actions/upload-artifact@v4
         with:
-          name: levi-video-screen-arm64-v0.1.1
-          path: levivideo/out/*.levipack
+          name: levi-video-screen-arm64-v0.2.0
+          path: levivideo/out/LeviVideoScreen-v0.2.0-arm64-v8a.levipack
           if-no-files-found: error
